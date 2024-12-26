@@ -1,67 +1,63 @@
-from flask import Flask, request, render_template, send_file
-import os
+from flask import Flask, request, jsonify
 import feedparser
-from xml.etree.ElementTree import ElementTree, Element, SubElement
-import requests
 import ffmpeg
+import os
+from urllib.request import urlretrieve
 
 app = Flask(__name__)
-UPLOAD_FOLDER = './static/processed'
+
+UPLOAD_FOLDER = "downloads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-@app.route('/')
+@app.route("/", methods=["GET"])
 def index():
-    return render_template('index.html')
+    return """
+    <h1>RSS MP3 Volume Adjuster</h1>
+    <form action="/process" method="post">
+      RSS URL: <input type="text" name="rss_url"><br>
+      Target Volume (dB): <input type="number" name="volume_db" step="0.1"><br>
+      <input type="submit" value="Submit">
+    </form>
+    """
 
-@app.route('/process', methods=['POST'])
+@app.route("/process", methods=["POST"])
 def process():
-    rss_url = request.form.get('rss_url')
-    max_volume = float(request.form.get('max_volume', -10))  # 型変換を修正
+    rss_url = request.form.get("rss_url")
+    volume_db = request.form.get("volume_db", 0)
 
-    # RSSフィードの取得と解析
-    feed = feedparser.parse(rss_url)
-    if not feed.entries:
-        return "RSSフィードが無効です。もう一度確認してください。", 400
+    if not rss_url:
+        return "RSS URL is required", 400
 
-    # XML構造を変更せずmp3の音量を調整
-    adjusted_feed_path = os.path.join(UPLOAD_FOLDER, 'adjusted_feed.xml')
-    root = Element('rss', version='2.0')
-    channel = SubElement(root, 'channel')
+    try:
+        feed = feedparser.parse(rss_url)
+        adjusted_items = []
 
-    for key in ['title', 'link', 'description']:
-        if key in feed.feed:
-            SubElement(channel, key).text = feed.feed[key]
+        for entry in feed.entries:
+            if "link" in entry:
+                mp3_url = entry["link"]
+                try:
+                    input_path = os.path.join(UPLOAD_FOLDER, os.path.basename(mp3_url))
+                    output_path = os.path.join(UPLOAD_FOLDER, "adjusted_" + os.path.basename(mp3_url))
+                    
+                    # Download the MP3
+                    urlretrieve(mp3_url, input_path)
 
-    for entry in feed.entries:
-        item = SubElement(channel, 'item')
-        for key in ['title', 'link', 'description']:
-            if key in entry:
-                SubElement(item, key).text = entry[key]
+                    # Adjust volume using ffmpeg
+                    ffmpeg.input(input_path).filter("volume", f"{volume_db}dB").output(output_path).run(overwrite_output=True)
 
-        # 音声ファイルのダウンロードと音量調整
-        enclosure = entry.get('links', [{}])[0]
-        if 'href' in enclosure:
-            input_url = enclosure['href']
-            input_filename = os.path.join(UPLOAD_FOLDER, os.path.basename(input_url))
-            output_filename = os.path.join(UPLOAD_FOLDER, f"adjusted_{os.path.basename(input_url)}")
+                    adjusted_items.append({
+                        "original_url": mp3_url,
+                        "adjusted_file": output_path,
+                    })
+                except Exception as e:
+                    print(f"Error adjusting volume for {mp3_url}: {e}")
+                    continue
 
-            # ダウンロード
-            response = requests.get(input_url, stream=True)
-            with open(input_filename, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
+        return jsonify({"adjusted_items": adjusted_items})
 
-            # ffmpegで音量調整
-            ffmpeg.input(input_filename).filter('volume', volume=f'{max_volume}dB').output(output_filename).run()
+    except Exception as e:
+        return f"An error occurred: {e}", 500
 
-            # 書き換え
-            SubElement(item, 'enclosure', url=f'/static/processed/{os.path.basename(output_filename)}', type="audio/mpeg")
 
-    # 保存
-    tree = ElementTree(root)
-    tree.write(adjusted_feed_path, encoding='utf-8', xml_declaration=True)
-    return render_template('result.html', rss_url=f'/static/processed/adjusted_feed.xml')
-
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
