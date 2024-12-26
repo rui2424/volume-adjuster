@@ -3,3 +3,4 @@ feedparser
 pydub
 lxml
 ffmpeg-python
+gunicorn==20.1.0
