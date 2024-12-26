@@ -2,3 +2,5 @@ Flask
 feedparser
 pydub
 lxml
+ffmpeg-python
+requests

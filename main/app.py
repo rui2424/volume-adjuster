@@ -2,6 +2,7 @@ from flask import Flask, request, render_template, send_file
 import os
 import feedparser
 from xml.etree.ElementTree import ElementTree, Element, SubElement
+import requests
 import ffmpeg
 
 app = Flask(__name__)
@@ -15,7 +16,7 @@ def index():
 @app.route('/process', methods=['POST'])
 def process():
     rss_url = request.form.get('rss_url')
-    max_volume = request.form.get('max_volume', -10, type=float)
+    max_volume = float(request.form.get('max_volume', -10))  # 型変換を修正
 
     # RSSフィードの取得と解析
     feed = feedparser.parse(rss_url)
@@ -45,18 +46,22 @@ def process():
             output_filename = os.path.join(UPLOAD_FOLDER, f"adjusted_{os.path.basename(input_url)}")
 
             # ダウンロード
-            os.system(f"wget -O {input_filename} {input_url}")
+            response = requests.get(input_url, stream=True)
+            with open(input_filename, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
 
             # ffmpegで音量調整
             ffmpeg.input(input_filename).filter('volume', volume=f'{max_volume}dB').output(output_filename).run()
 
             # 書き換え
-            SubElement(item, 'enclosure', url=output_filename, type="audio/mpeg")
+            SubElement(item, 'enclosure', url=f'/static/processed/{os.path.basename(output_filename)}', type="audio/mpeg")
 
     # 保存
     tree = ElementTree(root)
     tree.write(adjusted_feed_path, encoding='utf-8', xml_declaration=True)
-    return render_template('result.html', rss_url=adjusted_feed_path)
+    return render_template('result.html', rss_url=f'/static/processed/adjusted_feed.xml')
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
